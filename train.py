@@ -1,18 +1,39 @@
 import os
-import h5py
+import pickle
 import numpy as np
 import keras
-import yaml
+import json
+import argparse
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import LabelBinarizer
+from sklearn.model_selection import train_test_split
 from keras.callbacks import ModelCheckpoint
+from keras.callbacks import Callback
+from keras.models import load_model
 
 
-(train_images, train_labels), (test_images, test_labels) = keras.datasets.mnist.load_data()
+class DataLoader:
+    def load_dataset(self):
+        (train_images, train_labels), (test_images, test_labels) = keras.datasets.mnist.load_data()
 
-train_images = train_images[:1000].reshape(-1, 28 * 28) / 255.0
-test_images = test_images[:1000].reshape(-1, 28 * 28) / 255.0
+        X = np.vstack((train_images, test_images))
+        Y = np.hstack((train_labels, test_labels))
 
-train_labels = train_labels[:1000]
-test_labels = test_labels[:1000]
+        X = self.preprocess(X)
+
+        self.le = LabelBinarizer()
+        Y = self.le.fit_transform(Y)
+    
+        return train_test_split(X, Y, test_size=0.2, random_state=1)
+
+    def preprocess(self, X):
+        return X.reshape(-1, 28 * 28).astype('float32') / 255.0
+
+    def save_label_encoder(self, le_file):
+        pickle.dump(self.le, open(le_file, 'wb'))
+
 
 def create_model():
     model = keras.models.Sequential([
@@ -22,120 +43,118 @@ def create_model():
     ])
 
     model.compile(optimizer=keras.optimizers.Adam(),
-                  loss=keras.losses.sparse_categorical_crossentropy,
+                  loss=keras.losses.categorical_crossentropy,
                   metrics=['accuracy'])
 
     return model
 
 
-model = create_model()
-model.summary()
+class TrainingState(Callback):
+    def __init__(self, state_dir):
+        super(TrainingState, self).__init__()
 
+        self.state_dir = state_dir
 
-output_dir = './output/'
+        self.json_log_file = os.path.join(self.state_dir, 'logs.json')
+        self.png_log_file = os.path.join(self.state_dir, 'logs.png')
+        self.last_model_file = os.path.join(self.state_dir, 'last_model.h5')
+        self.best_model_file = os.path.join(self.state_dir, 'best_model.h5')
 
-if not os.path.exists(output_dir):
-    os.mkdir(output_dir)
+        if os.path.exists(self.json_log_file):
+            with open(self.json_log_file, 'r') as f:
+                self.history = json.load(f)
+        else:
+            self.history = {
+                'epoch': -1,
+                'best': 0
+            }
 
+    def get_init_epoch(self):
+        return self.history['epoch'] + 1
 
-class MetaCheckpoint(ModelCheckpoint):
-    def __init__(self, filepath, monitor='val_loss', verbose=0,
-                 save_best_only=False, save_weights_only=False,
-                 mode='auto', period=1, training_args=None, meta=None):
+    def get_last_model(self):
+        if os.path.exists(self.last_model_file):
+            return load_model(self.last_model_file)
+        else:
+            return None
 
-        super(MetaCheckpoint, self).__init__(filepath,
-                                             monitor=monitor,
-                                             verbose=verbose,
-                                             save_best_only=save_best_only,
-                                             save_weights_only=save_weights_only,
-                                             mode=mode,
-                                             period=period)
-
-        self.filepath = filepath
-        self.new_file_override = True
-        self.meta = meta or {'epochs': [], self.monitor: []}
-
-        if training_args:
-            self.meta['training_args'] = training_args
-
-    def on_train_begin(self, logs={}):
-        if self.save_best_only:
-            if 'acc' in self.monitor or self.monitor.startswith('fmeasure'):
-                self.best = max(self.meta[self.monitor], default=-np.Inf)
-            else:
-                self.best = min(self.meta[self.monitor], default=np.Inf)
-
-        super(MetaCheckpoint, self).on_train_begin(logs)
-
-    def on_epoch_end(self, epoch, logs={}):
-        if self.save_best_only:
-            current = logs.get(self.monitor)
-            if self.monitor_op(current, self.best):
-                self.new_file_override = True
-            else:
-                self.new_file_override = False
-
-        super(MetaCheckpoint, self).on_epoch_end(epoch, logs)
-
-        # Get statistics
-        self.meta['epochs'].append(epoch)
+    def on_epoch_end(self, epoch, logs=None):
+        self.history['epoch'] = epoch
+        
+        logs = logs or None
         for k, v in logs.items():
-            # Get default gets the value or sets (and gets) the default value
-            self.meta.setdefault(k, []).append(v)
+            self.history.setdefault(k, []).append(v)
 
-        # Save to file
-        filepath = self.filepath.format(epoch=epoch, **logs)
+        self.save_json_log()
+        self.save_png_log()
+        self.save_last_model()
+        self.save_best_model()
+        
+    def save_json_log(self):
+        with open(self.json_log_file, 'w') as f:
+            json.dump(self.history, f)
 
-        if self.new_file_override and self.epochs_since_last_save == 0:
-            # 只有在‘只保存’最优版本且生成新的.h5文件的情况下 才会继续添加meta
-            with h5py.File(filepath, 'r+') as f:
-                meta_group = f.create_group('meta')
-                meta_group.attrs['training_args'] = yaml.dump(
-                    self.meta.get('training_args', '{}'))
-                meta_group.create_dataset('epochs', data=np.array(self.meta['epochs']))
-                for k in logs:
-                    meta_group.create_dataset(k, data=np.array(self.meta[k]))
+        print('save json log to {}'.format(self.json_log_file))
+
+    def save_png_log(self):
+        history = self.history
+        size = history['epoch'] + 1
+        
+        plt.style.use("ggplot")
+        plt.figure()
+        plt.plot(np.arange(0, size), history["loss"], label="train_loss")
+        plt.plot(np.arange(0, size), history["val_loss"], label="val_loss")
+        plt.plot(np.arange(0, size), history["acc"], label="train_acc")
+        plt.plot(np.arange(0, size), history["val_acc"], label="val_acc")
+        plt.title("Training Loss and Accuracy")
+        plt.xlabel("Epoch #")
+        plt.ylabel("Loss/Accuracy")
+        plt.legend()
+        plt.savefig(self.png_log_file)
+
+        print('save png log to {}'.format(self.png_log_file))
+
+    def save_last_model(self):
+        self.model.save(self.last_model_file)
+        print('save last model to {}'.format(self.last_model_file))
+
+    def save_best_model(self):
+        epoch = self.history['epoch']
+        best = self.history['best']
+        val_acc = self.history['val_acc']
+        
+        if val_acc[-1] > best:
+            self.history['best'] = val_acc[-1]
+            self.model.save(self.best_model_file)
+            print('val_acc inc from {} to {}, save best model to {}'.format(best, val_acc[-1], self.best_model_file))
+        else:
+            print('no inc in val_acc ...')
 
 
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-o", "--output", required=True,
+                    help="path to output dir for model training")
+    args = vars(ap.parse_args())
 
-def load_meta(model_fname):
-    """
-    Load meta configuration
-    :param model_fname: model file name
-    :return: meta info
-    """
-    meta = {}
+    output_dir = args['output']
+    os.makedirs(output_dir, exist_ok=True)
+    label_encoder_file = os.path.join(output_dir, 'label_encoder.pkl')
 
-    with h5py.File(model_fname, 'r') as f:
-        meta_group = f['meta']
+    data_loader = DataLoader()
+    trainX, testX, trainY, testY = data_loader.load_dataset()
+    data_loader.save_label_encoder(label_encoder_file)
 
-        meta['training_args'] = yaml.load(
-            meta_group.attrs['training_args'])
-        for k in meta_group.keys():
-            meta[k] = list(meta_group[k])
+    trainingState = TrainingState(output_dir)
+    
+    model = trainingState.get_last_model()
+    if not model:
+        model = create_model()
+        
+    model.summary()
 
-    return meta
-
-
-output_net_path = os.path.join(output_dir, 'pointnet.h5')
-
-def get_last_status(model):
-    last_epoch = -1
-    last_meta = {}
-    if os.path.exists(output_net_path):
-        model.load_weights(output_net_path)
-        last_meta = load_meta(output_net_path)
-        last_epoch = last_meta.get('epochs')[-1]
-    return last_epoch, last_meta
-
-
-last_epoch, last_meta = get_last_status(model)
-
-checkpoint = MetaCheckpoint(output_net_path, monitor='val_acc',
-                            save_weights_only=True, save_best_only=True,
-                            verbose=1, meta=last_meta)
-
-model.fit(train_images, train_labels, epochs=10,
-          validation_data=(test_images, test_labels),
-          callbacks=[checkpoint],
-          initial_epoch=last_epoch + 1)
+    model.fit(trainX, trainY,
+              validation_data=(testX, testY),
+              epochs=10, batch_size=32,
+              callbacks=[trainingState],
+              initial_epoch=trainingState.get_init_epoch())
