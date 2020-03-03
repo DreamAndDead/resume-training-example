@@ -145,6 +145,7 @@ if __name__ == '__main__':
     output_dir = args['output']
     os.makedirs(output_dir, exist_ok=True)
     label_encoder_file = os.path.join(output_dir, 'label_encoder.pkl')
+    report_file = os.path.join(output_dir, 'classification_report.txt')
 
     data_loader = DataLoader()
     trainX, testX, trainY, testY = data_loader.load_dataset()
@@ -167,4 +168,7 @@ if __name__ == '__main__':
     predictions = model.predict(testX, batch_size=64)
     report = classification_report(testY.argmax(axis=1),
                                    predictions.argmax(axis=1))
-    print(report)
+    
+    with open(report_file, 'w') as f:
+        f.write(report)
+    
