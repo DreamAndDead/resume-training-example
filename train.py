@@ -2,16 +2,16 @@ import os
 import pickle
 import json
 import argparse
+import keras
 import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.model_selection import train_test_split
-import keras
-from keras.callbacks import ModelCheckpoint
+from sklearn.metrics import classification_report
 from keras.callbacks import Callback
 from keras.models import load_model
+import matplotlib
+import matplotlib.pyplot as plt
+matplotlib.use("Agg")
 
 
 class DataLoader:
@@ -40,7 +40,7 @@ class DataLoader:
 
 def create_model():
     model = keras.models.Sequential([
-        keras.layers.convolutional.Conv2D(32, (2, 2), strides=(1, 1), padding='same', input_shape=(28, 28, 1)),
+        keras.layers.convolutional.Conv2D(16, (2, 2), strides=(1, 1), padding='same', input_shape=(28, 28, 1)),
         keras.layers.MaxPooling2D(pool_size=(2, 2)),
         keras.layers.Activation('relu'),
         keras.layers.Flatten(),
@@ -48,12 +48,11 @@ def create_model():
         keras.layers.Dense(10, activation='softmax')
     ])
 
-    model.compile(optimizer=keras.optimizers.Adam(),
+    model.compile(optimizer=keras.optimizers.SGD(lr=0.005),
                   loss=keras.losses.categorical_crossentropy,
                   metrics=['accuracy'])
 
     return model
-
 
 class TrainingState(Callback):
     def __init__(self, state_dir):
@@ -75,10 +74,10 @@ class TrainingState(Callback):
                 'best': 0
             }
 
-    def get_init_epoch(self):
+    def get_initial_epoch(self):
         return self.history['epoch'] + 1
 
-    def get_last_model(self):
+    def load_last_model(self):
         if os.path.exists(self.last_model_file):
             return load_model(self.last_model_file)
         else:
@@ -95,7 +94,7 @@ class TrainingState(Callback):
         self.save_png_log()
         self.save_last_model()
         self.save_best_model()
-        
+
     def save_json_log(self):
         with open(self.json_log_file, 'w') as f:
             json.dump(self.history, f)
@@ -140,7 +139,7 @@ class TrainingState(Callback):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument("-o", "--output", required=True,
-                    help="path to output dir for model training")
+                    help="output dir to save training state")
     args = vars(ap.parse_args())
 
     output_dir = args['output']
@@ -153,7 +152,7 @@ if __name__ == '__main__':
 
     trainingState = TrainingState(output_dir)
     
-    model = trainingState.get_last_model()
+    model = trainingState.load_last_model()
     if not model:
         model = create_model()
         
@@ -163,4 +162,9 @@ if __name__ == '__main__':
               validation_data=(testX, testY),
               epochs=10, batch_size=32,
               callbacks=[trainingState],
-              initial_epoch=trainingState.get_init_epoch())
+              initial_epoch=trainingState.get_initial_epoch())
+
+    predictions = model.predict(testX, batch_size=64)
+    report = classification_report(testY.argmax(axis=1),
+                                   predictions.argmax(axis=1))
+    print(report)
