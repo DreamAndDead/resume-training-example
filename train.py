@@ -1,14 +1,14 @@
 import os
 import pickle
-import numpy as np
-import keras
 import json
 import argparse
+import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import LabelBinarizer
 from sklearn.model_selection import train_test_split
+import keras
 from keras.callbacks import ModelCheckpoint
 from keras.callbacks import Callback
 from keras.models import load_model
@@ -29,17 +29,23 @@ class DataLoader:
         return train_test_split(X, Y, test_size=0.2, random_state=1)
 
     def preprocess(self, X):
-        return X.reshape(-1, 28 * 28).astype('float32') / 255.0
+        return X.reshape(-1, 28, 28, 1).astype('float32') / 255.0
 
     def save_label_encoder(self, le_file):
         pickle.dump(self.le, open(le_file, 'wb'))
 
+    def load_label_encoder(self, le_file):
+        return pickle.load(open(le_file, 'rb'))
+
 
 def create_model():
     model = keras.models.Sequential([
-        keras.layers.Dense(512, activation="relu", input_shape=(784,)),
-        keras.layers.Dropout(0.2),
-        keras.layers.Dense(10, activation="softmax")
+        keras.layers.convolutional.Conv2D(32, (2, 2), strides=(1, 1), padding='same', input_shape=(28, 28, 1)),
+        keras.layers.MaxPooling2D(pool_size=(2, 2)),
+        keras.layers.Activation('relu'),
+        keras.layers.Flatten(),
+        keras.layers.Dense(32, activation='relu'),
+        keras.layers.Dense(10, activation='softmax')
     ])
 
     model.compile(optimizer=keras.optimizers.Adam(),
