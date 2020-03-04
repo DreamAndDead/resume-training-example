@@ -29,8 +29,8 @@ if __name__ == '__main__':
         res = model.predict(X)
 
         res = le.inverse_transform(res)
-        print(res)
         
-        cv2.imshow(str(res[0]), x)
-        cv2.waitKey(0)
+        cv2.imshow('label {}, pred {}'.format(l, res[0]), x)
+
+    cv2.waitKey(0)
 
